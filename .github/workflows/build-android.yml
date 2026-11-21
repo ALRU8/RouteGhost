@@ -1,0 +1,57 @@
+name: Build RouteGhost (Organic Maps)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'overlay/**'
+      - 'apply_patch.py'
+      - '.github/workflows/build-android.yml'
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout RouteGhost bridge
+        uses: actions/checkout@v4
+
+      - name: Free disk space for the Organic Maps C++ build
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/powershell
+          df -h .
+
+      - name: Install Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Clone Organic Maps with dependencies
+        run: |
+          git clone --depth=1 --branch 2026.11.11-39-android \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/organicmaps/organicmaps.git organicmaps
+          df -h .
+
+      - name: Apply RouteGhost changes
+        run: python3 apply_patch.py organicmaps
+
+      - name: Configure Android SDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "cmake;3.22.1" "platform-tools"
+          echo "$ANDROID_HOME/cmake/3.22.1/bin" >> "$GITHUB_PATH"
+
+      - name: Build F-Droid debug APK (arm64)
+        working-directory: organicmaps/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleFdroidDebug -Parm64 -Pnjobs=2 --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RouteGhost-OrganicMaps-APK
+          path: organicmaps/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

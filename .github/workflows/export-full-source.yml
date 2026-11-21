@@ -1,0 +1,53 @@
+name: Export Complete RouteGhost Source
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout RouteGhost integration
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/powershell
+          df -h .
+
+      - name: Download full Organic Maps source and submodules
+        run: |
+          git clone --depth=1 --branch 2026.11.11-39-android \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/organicmaps/organicmaps.git organicmaps
+          git -C organicmaps submodule status --recursive
+
+      - name: Integrate RouteGhost code
+        run: |
+          python3 apply_patch.py organicmaps
+          test -s organicmaps/android/app/src/main/java/app/organicmaps/routeghost/RouteGhostUi.java
+          test -s organicmaps/android/app/src/main/java/app/organicmaps/routeghost/LocationService.java
+
+      - name: Add integration documentation
+        run: |
+          cp README.md organicmaps/ROUTEGHOST_README.md
+          cp NOTICE.md organicmaps/ROUTEGHOST_NOTICE.md
+
+      - name: Package full merged source
+        run: |
+          mkdir -p output
+          tar --exclude=.git --exclude='*/.git' --exclude='*/.gradle' \
+            -czf output/RouteGhost-OrganicMaps-Full-Source.tar.gz -C organicmaps .
+          ls -lh output/
+
+      - name: Upload complete source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: RouteGhost-Full-Source
+          path: output/RouteGhost-OrganicMaps-Full-Source.tar.gz
+          if-no-files-found: error
+          retention-days: 7
