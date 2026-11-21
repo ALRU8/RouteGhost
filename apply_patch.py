@@ -5,6 +5,7 @@ Usage: python apply_patch.py /path/to/organicmaps
 """
 from pathlib import Path
 import shutil
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -16,6 +17,27 @@ def once_replace(data: str, before: str, after: str, location: str) -> str:
     if number != 1:
         raise RuntimeError(f"Organic Maps version mismatch in {location}: expected 1 anchor, got {number}: {before[:90]}")
     return data.replace(before, after, 1)
+
+
+def set_routeghost_label(xml: str, tag_name: str, identity: str = "") -> str:
+    """Rename only a specific manifest element, preserving the original formatting.
+
+    Organic Maps defines the app name on both <application> and its launcher
+    <activity-alias>. Replacing a global string or expecting one match breaks.
+    """
+    matches = [match for match in re.finditer(r"<" + re.escape(tag_name) + r"\b[^>]*>", xml, re.DOTALL)
+               if not identity or identity in match.group(0)]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected exactly one <{tag_name}> element containing {identity!r}; got {len(matches)}")
+    match = matches[0]
+    tag = match.group(0)
+    if 'android:label="RouteGhost"' in tag:
+        return xml
+    before = 'android:label="@string/app_name"'
+    if tag.count(before) != 1:
+        raise RuntimeError(f"Unexpected label in <{tag_name}> with {identity!r}")
+    updated = tag.replace(before, 'android:label="RouteGhost"', 1)
+    return xml[:match.start()] + updated + xml[match.end():]
 
 
 def patch(root: Path):
@@ -45,8 +67,9 @@ def patch(root: Path):
         android:foregroundServiceType="location" />
 '''
         xml = once_replace(xml, "</application>", insertion + "  </application>", "AndroidManifest.xml")
-    if 'android:label="@string/app_name"' in xml:
-        xml = once_replace(xml, 'android:label="@string/app_name"', 'android:label="RouteGhost"', "AndroidManifest.xml app label")
+    xml = set_routeghost_label(xml, "application")
+    xml = set_routeghost_label(xml, "activity-alias",
+                                'android:name="app.organicmaps.DownloadResourcesActivity"')
     # The upstream app already requests ACCESS_FINE_LOCATION, FOREGROUND_SERVICE and FOREGROUND_SERVICE_LOCATION.
     xmlroot = ET.fromstring(xml)
     ns = "{http://schemas.android.com/apk/res/android}"
