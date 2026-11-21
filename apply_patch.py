@@ -223,6 +223,21 @@ def patch(root: Path):
     xml = set_routeghost_label(xml, "application")
     xml = set_routeghost_label(xml, "activity-alias",
                                 'android:name="app.organicmaps.DownloadResourcesActivity"')
+    # The Developer Options mock-location picker requires this permission
+    # to be declared by the installed package.
+    mock_permission = "android.permission.ACCESS_MOCK_LOCATION"
+    xmlroot = ET.fromstring(xml)
+    ns = "{http://schemas.android.com/apk/res/android}"
+    declared = {node.attrib.get(ns + "name") for node in xmlroot
+                if node.tag in ("uses-permission", "uses-permission-sdk-23")}
+    if mock_permission not in declared:
+        root_opening = re.search(r"<manifest\b[^>]*>", xml, re.DOTALL)
+        if root_opening is None:
+            raise RuntimeError("Missing <manifest> opening tag")
+        xml = (xml[:root_opening.end()] +
+               '\n    <uses-permission android:name="' + mock_permission + '" />' +
+               xml[root_opening.end():])
+
     # The upstream app already requests ACCESS_FINE_LOCATION, FOREGROUND_SERVICE and FOREGROUND_SERVICE_LOCATION.
     xmlroot = ET.fromstring(xml)
     ns = "{http://schemas.android.com/apk/res/android}"
@@ -230,6 +245,8 @@ def patch(root: Path):
     for name in ["android.permission.ACCESS_FINE_LOCATION", "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_LOCATION"]:
         if name not in permission_names:
             raise RuntimeError(f"Organic Maps manifest is missing required permission {name}")
+    if mock_permission not in permission_names:
+        raise RuntimeError("Missing ACCESS_MOCK_LOCATION after manifest patch")
     manifest.write_text(xml, encoding="utf-8")
 
     # When the route is previewed or the selected alternative has just switched,
