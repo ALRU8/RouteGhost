@@ -79,6 +79,50 @@ def patch(root: Path):
             raise RuntimeError(f"Organic Maps manifest is missing required permission {name}")
     manifest.write_text(xml, encoding="utf-8")
 
+    # When the route is previewed or the selected alternative has just switched,
+    # the native following-route geometry may not be ready yet. The routing core
+    # retains the selected route in RoutesResult, including its actual vertices.
+    # Read these vertices as a fallback instead of inventing a straight line.
+    native_routing = (root / "android" / "sdk" / "src" / "main" / "cpp" / "app" /
+                      "organicmaps" / "sdk" / "Framework.cpp")
+    if not native_routing.is_file():
+        raise FileNotFoundError("Missing upstream SDK JNI Framework.cpp")
+    native_text = native_routing.read_text(encoding="utf-8")
+    old_geometry = '''  std::vector<geometry::PointWithAltitude> points;
+  if (!frm()->GetRoutingManager().RoutingSession().GetRouteJunctionPoints(points))
+  {
+    LOG(LWARNING, ("Can't get the route junction points"));
+    return nullptr;
+  }
+  std::vector<geometry::PointWithAltitude> result;'''
+    new_geometry = '''  std::vector<geometry::PointWithAltitude> points;
+  auto const & session = frm()->GetRoutingManager().RoutingSession();
+  if (!session.GetRouteJunctionPoints(points) || points.size() < 2)
+  {
+    points.clear();
+    // The selected route may already be visible while the followed Route is
+    // temporarily unavailable. Do not replace it with straight route marks.
+    session.RouteCall([&points](routing::RoutesResult const & routes)
+    {
+      if (!routes.IsValid())
+        return;
+      routes.GetActive().ForEachPoint([&points](geometry::PointWithAltitude const & point)
+      {
+        points.push_back(point);
+      });
+    });
+  }
+  if (points.size() < 2)
+  {
+    LOG(LWARNING, ("Selected route has no usable geometry"));
+    return nullptr;
+  }
+  std::vector<geometry::PointWithAltitude> result;'''
+    if new_geometry not in native_text:
+        native_text = once_replace(native_text, old_geometry, new_geometry,
+                                   "SDK Framework.cpp route geometry")
+        native_routing.write_text(native_text, encoding="utf-8")
+
     destination = main / "java" / "app" / "organicmaps" / "routeghost"
     destination.mkdir(parents=True, exist_ok=True)
     for f in OVERLAY.glob("*.java"):

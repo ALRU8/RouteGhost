@@ -46,7 +46,7 @@ public final class RouteGhostPanel extends Activity {
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.WHITE);getWindow().setNavigationBarColor(Color.WHITE);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        captureFailed=getIntent().getBooleanExtra("built",false)&&!getIntent().getBooleanExtra("captured",false);
+        captureFailed=getIntent().getBooleanExtra("capture_attempted",false)&&!getIntent().getBooleanExtra("captured",false);
         root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(0xFFF7FAF8);
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);
         main=new LinearLayout(this);main.setPadding(dp(20),dp(14),dp(20),dp(22));main.setOrientation(LinearLayout.VERTICAL);
@@ -80,7 +80,7 @@ public final class RouteGhostPanel extends Activity {
         drawControls();
     }
     private void drawRoute(){
-        if(captureFailed)put(main,text("Не удалось извлечь геометрию выбранного маршрута. Попробуйте другой вариант или импортируйте GPX. Старый трек не будет запущен.",13,0xFFB34E27,true),18);
+        if(captureFailed)put(main,text("Не удалось получить координаты выбранного маршрута. Убедитесь, что Organic Maps завершил построение, и откройте GPS заново. Можно также импортировать GPX. Старый маршрут не запустится.",13,0xFFB34E27,true),18);
         LinearLayout card=vertical();card.setPadding(dp(16),dp(16),dp(16),dp(16));card.setBackground(box(Color.WHITE,19));
         try{
             Plan p=RouteGhostStorage.load(this);routeLoaded=!captureFailed;
