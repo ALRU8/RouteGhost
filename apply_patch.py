@@ -40,6 +40,68 @@ def set_routeghost_label(xml: str, tag_name: str, identity: str = "") -> str:
     return xml[:match.start()] + updated + xml[match.end():]
 
 
+def patch_native_route_geometry(native_text: str) -> str:
+    # Patch just one JNI function. Tolerate upstream whitespace and logging changes.
+    name = "Java_app_organicmaps_sdk_Framework_nativeGetRouteJunctionPoints"
+    matches = list(re.finditer(r"\b" + name + r"\s*\(", native_text))
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected exactly one {name} in Framework.cpp; got {len(matches)}")
+    opening = native_text.find("{", matches[0].end())
+    if opening == -1:
+        raise RuntimeError("No opening brace in nativeGetRouteJunctionPoints")
+
+    depth = 0
+    closing = -1
+    for pos in range(opening, len(native_text)):
+        if native_text[pos] == "{":
+            depth += 1
+        elif native_text[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                closing = pos
+                break
+    if closing < 0:
+        raise RuntimeError("Unbalanced JNI method braces")
+
+    body = native_text[opening + 1:closing]
+    if "Selected route has no usable geometry" in body and "session.RouteCall" in body:
+        return native_text
+
+    start = re.search(r"std::vector\s*<\s*geometry::PointWithAltitude\s*>\s+points\s*;", body)
+    finish = re.search(r"std::vector\s*<\s*geometry::PointWithAltitude\s*>\s+result\s*;", body)
+    if not start or not finish or finish.start() <= start.end():
+        raise RuntimeError("Unexpected JNI geometry function: missing points/result declarations")
+    original = body[start.end():finish.start()]
+    if "GetRouteJunctionPoints(points)" not in original:
+        raise RuntimeError("Unexpected JNI geometry method: routing source differs")
+    if "result.push_back(points[0])" not in body[finish.end():]:
+        raise RuntimeError("Unexpected interpolation code; aborting")
+
+    new_part = """std::vector<geometry::PointWithAltitude> points;
+  auto const & session = frm()->GetRoutingManager().RoutingSession();
+  if (!session.GetRouteJunctionPoints(points) || points.size() < 2)
+  {
+    points.clear();
+    session.RouteCall([&points](routing::RoutesResult const & routes)
+    {
+      if (!routes.IsValid())
+        return;
+      routes.GetActive().ForEachPoint([&points](geometry::PointWithAltitude const & point)
+      {
+        points.push_back(point);
+      });
+    });
+  }
+  if (points.size() < 2)
+  {
+    LOG(LWARNING, ("Selected route has no usable geometry"));
+    return nullptr;
+  }
+  std::vector<geometry::PointWithAltitude> result;"""
+    body = body[:start.start()] + new_part + body[finish.end():]
+    return native_text[:opening + 1] + body + native_text[closing:]
+
+
 def patch(root: Path):
     main = root / "android" / "app" / "src" / "main"
     mwm = main / "java" / "app" / "organicmaps" / "MwmActivity.java"
@@ -88,40 +150,9 @@ def patch(root: Path):
     if not native_routing.is_file():
         raise FileNotFoundError("Missing upstream SDK JNI Framework.cpp")
     native_text = native_routing.read_text(encoding="utf-8")
-    old_geometry = '''  std::vector<geometry::PointWithAltitude> points;
-  if (!frm()->GetRoutingManager().RoutingSession().GetRouteJunctionPoints(points))
-  {
-    LOG(LWARNING, ("Can't get the route junction points"));
-    return nullptr;
-  }
-  std::vector<geometry::PointWithAltitude> result;'''
-    new_geometry = '''  std::vector<geometry::PointWithAltitude> points;
-  auto const & session = frm()->GetRoutingManager().RoutingSession();
-  if (!session.GetRouteJunctionPoints(points) || points.size() < 2)
-  {
-    points.clear();
-    // The selected route may already be visible while the followed Route is
-    // temporarily unavailable. Do not replace it with straight route marks.
-    session.RouteCall([&points](routing::RoutesResult const & routes)
-    {
-      if (!routes.IsValid())
-        return;
-      routes.GetActive().ForEachPoint([&points](geometry::PointWithAltitude const & point)
-      {
-        points.push_back(point);
-      });
-    });
-  }
-  if (points.size() < 2)
-  {
-    LOG(LWARNING, ("Selected route has no usable geometry"));
-    return nullptr;
-  }
-  std::vector<geometry::PointWithAltitude> result;'''
-    if new_geometry not in native_text:
-        native_text = once_replace(native_text, old_geometry, new_geometry,
-                                   "SDK Framework.cpp route geometry")
-        native_routing.write_text(native_text, encoding="utf-8")
+    patched_text = patch_native_route_geometry(native_text)
+    if patched_text != native_text:
+        native_routing.write_text(patched_text, encoding="utf-8")
 
     destination = main / "java" / "app" / "organicmaps" / "routeghost"
     destination.mkdir(parents=True, exist_ok=True)
