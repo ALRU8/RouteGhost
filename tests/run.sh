@@ -9,3 +9,5 @@ javac -d /tmp/routeghost-unit-classes \
   tests/RunEngineTests.java
 java -cp /tmp/routeghost-unit-classes RunEngineTests
 python3 -m py_compile apply_patch.py
+python3 tests/test_patch_geometry.py
+python3 tests/test_java_ui.py

@@ -27,6 +27,9 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Validate RouteGhost code and patch
+        run: bash tests/run.sh
+
       - name: Clone Organic Maps with dependencies
         run: |
           git clone --depth=1 --branch 2026.11.11-39-android \
@@ -36,6 +39,15 @@ jobs:
 
       - name: Apply RouteGhost changes
         run: python3 apply_patch.py organicmaps
+
+      - name: Verify RouteGhost Java integration
+        run: |
+          dir="organicmaps/android/app/src/main/java/app/organicmaps/routeghost"
+          for f in RouteData.java RouteGhostUi.java RouteGhostPanel.java LocationService.java RouteGhostStorage.java SimulationEngine.java TrackIO.java; do
+            test -s "$dir/$f" || { echo "::error::Missing $dir/$f"; exit 1; }
+          done
+          grep -q 'class Plan' "$dir/RouteData.java" || { echo '::error::RouteData.Plan is missing'; exit 1; }
+          echo 'All seven RouteGhost Java sources are installed.'
 
       - name: Configure Android SDK
         run: |

@@ -1,6 +1,6 @@
-============================================================================================
+================================================================================
 FILE: apply_patch.py
-============================================================================================
+================================================================================
 #!/usr/bin/env python3
 """Install the RouteGhost bridge into an upstream Organic Maps source tree.
 
@@ -8,6 +8,7 @@ Usage: python apply_patch.py /path/to/organicmaps
 """
 from pathlib import Path
 import shutil
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -19,6 +20,89 @@ def once_replace(data: str, before: str, after: str, location: str) -> str:
     if number != 1:
         raise RuntimeError(f"Organic Maps version mismatch in {location}: expected 1 anchor, got {number}: {before[:90]}")
     return data.replace(before, after, 1)
+
+
+def set_routeghost_label(xml: str, tag_name: str, identity: str = "") -> str:
+    """Rename only a specific manifest element, preserving the original formatting.
+
+    Organic Maps defines the app name on both <application> and its launcher
+    <activity-alias>. Replacing a global string or expecting one match breaks.
+    """
+    matches = [match for match in re.finditer(r"<" + re.escape(tag_name) + r"\b[^>]*>", xml, re.DOTALL)
+               if not identity or identity in match.group(0)]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected exactly one <{tag_name}> element containing {identity!r}; got {len(matches)}")
+    match = matches[0]
+    tag = match.group(0)
+    if 'android:label="RouteGhost"' in tag:
+        return xml
+    before = 'android:label="@string/app_name"'
+    if tag.count(before) != 1:
+        raise RuntimeError(f"Unexpected label in <{tag_name}> with {identity!r}")
+    updated = tag.replace(before, 'android:label="RouteGhost"', 1)
+    return xml[:match.start()] + updated + xml[match.end():]
+
+
+def patch_native_route_geometry(native_text: str) -> str:
+    # Patch just one JNI function. Tolerate upstream whitespace and logging changes.
+    name = "Java_app_organicmaps_sdk_Framework_nativeGetRouteJunctionPoints"
+    matches = list(re.finditer(r"\b" + name + r"\s*\(", native_text))
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected exactly one {name} in Framework.cpp; got {len(matches)}")
+    opening = native_text.find("{", matches[0].end())
+    if opening == -1:
+        raise RuntimeError("No opening brace in nativeGetRouteJunctionPoints")
+
+    depth = 0
+    closing = -1
+    for pos in range(opening, len(native_text)):
+        if native_text[pos] == "{":
+            depth += 1
+        elif native_text[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                closing = pos
+                break
+    if closing < 0:
+        raise RuntimeError("Unbalanced JNI method braces")
+
+    body = native_text[opening + 1:closing]
+    if "Selected route has no usable geometry" in body and "session.RouteCall" in body:
+        return native_text
+
+    start = re.search(r"std::vector\s*<\s*geometry::PointWithAltitude\s*>\s+points\s*;", body)
+    finish = re.search(r"std::vector\s*<\s*geometry::PointWithAltitude\s*>\s+result\s*;", body)
+    if not start or not finish or finish.start() <= start.end():
+        raise RuntimeError("Unexpected JNI geometry function: missing points/result declarations")
+    original = body[start.end():finish.start()]
+    if "GetRouteJunctionPoints(points)" not in original:
+        raise RuntimeError("Unexpected JNI geometry method: routing source differs")
+    if "result.push_back(points[0])" not in body[finish.end():]:
+        raise RuntimeError("Unexpected interpolation code; aborting")
+
+    new_part = """std::vector<geometry::PointWithAltitude> points;
+  auto const & session = frm()->GetRoutingManager().RoutingSession();
+  if (!session.GetRouteJunctionPoints(points) || points.size() < 2)
+  {
+    points.clear();
+    session.RouteCall([&points](routing::RoutesResult const & routes)
+    {
+      if (!routes.IsValid())
+        return;
+      routes.GetActive().ForEachPoint([&points](geometry::PointWithAltitude const & point)
+      {
+        points.push_back(point);
+      });
+    });
+  }
+  if (points.size() < 2)
+  {
+    LOG(LWARNING, ("Selected route has no usable geometry"));
+    return nullptr;
+  }
+  std::vector<geometry::PointWithAltitude> result;"""
+    body = body[:start.start()] + new_part + body[finish.end():]
+    return native_text[:opening + 1] + body + native_text[closing:]
 
 
 def patch(root: Path):
@@ -48,8 +132,9 @@ def patch(root: Path):
         android:foregroundServiceType="location" />
 '''
         xml = once_replace(xml, "</application>", insertion + "  </application>", "AndroidManifest.xml")
-    if 'android:label="@string/app_name"' in xml:
-        xml = once_replace(xml, 'android:label="@string/app_name"', 'android:label="RouteGhost"', "AndroidManifest.xml app label")
+    xml = set_routeghost_label(xml, "application")
+    xml = set_routeghost_label(xml, "activity-alias",
+                                'android:name="app.organicmaps.DownloadResourcesActivity"')
     # The upstream app already requests ACCESS_FINE_LOCATION, FOREGROUND_SERVICE and FOREGROUND_SERVICE_LOCATION.
     xmlroot = ET.fromstring(xml)
     ns = "{http://schemas.android.com/apk/res/android}"
@@ -58,6 +143,19 @@ def patch(root: Path):
         if name not in permission_names:
             raise RuntimeError(f"Organic Maps manifest is missing required permission {name}")
     manifest.write_text(xml, encoding="utf-8")
+
+    # When the route is previewed or the selected alternative has just switched,
+    # the native following-route geometry may not be ready yet. The routing core
+    # retains the selected route in RoutesResult, including its actual vertices.
+    # Read these vertices as a fallback instead of inventing a straight line.
+    native_routing = (root / "android" / "sdk" / "src" / "main" / "cpp" / "app" /
+                      "organicmaps" / "sdk" / "Framework.cpp")
+    if not native_routing.is_file():
+        raise FileNotFoundError("Missing upstream SDK JNI Framework.cpp")
+    native_text = native_routing.read_text(encoding="utf-8")
+    patched_text = patch_native_route_geometry(native_text)
+    if patched_text != native_text:
+        native_routing.write_text(patched_text, encoding="utf-8")
 
     destination = main / "java" / "app" / "organicmaps" / "routeghost"
     destination.mkdir(parents=True, exist_ok=True)
@@ -72,10 +170,9 @@ if __name__ == "__main__":
         raise SystemExit("Usage: python apply_patch.py /path/to/organicmaps")
     patch(Path(sys.argv[1]).resolve())
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/LocationService.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import android.app.Notification;
@@ -232,10 +329,9 @@ public final class LocationService extends Service {
     @Override public void onDestroy(){if(running)halt("Эмуляция выключена");super.onDestroy();}
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/RouteData.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import org.json.JSONArray;
@@ -322,10 +418,9 @@ public final class RouteData {
     public static boolean publicTransport(String type){return !(WALK.equals(type)||CAR.equals(type)||WAIT.equals(type));}
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/RouteGhostPanel.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import android.app.Activity;
@@ -374,7 +469,7 @@ public final class RouteGhostPanel extends Activity {
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.WHITE);getWindow().setNavigationBarColor(Color.WHITE);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        captureFailed=getIntent().getBooleanExtra("built",false)&&!getIntent().getBooleanExtra("captured",false);
+        captureFailed=getIntent().getBooleanExtra("capture_attempted",false)&&!getIntent().getBooleanExtra("captured",false);
         root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(0xFFF7FAF8);
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);
         main=new LinearLayout(this);main.setPadding(dp(20),dp(14),dp(20),dp(22));main.setOrientation(LinearLayout.VERTICAL);
@@ -408,7 +503,7 @@ public final class RouteGhostPanel extends Activity {
         drawControls();
     }
     private void drawRoute(){
-        if(captureFailed)put(main,text("Не удалось извлечь геометрию выбранного маршрута. Попробуйте другой вариант или импортируйте GPX. Старый трек не будет запущен.",13,0xFFB34E27,true),18);
+        if(captureFailed)put(main,text("Не удалось получить координаты выбранного маршрута. Убедитесь, что Organic Maps завершил построение, и откройте GPS заново. Можно также импортировать GPX. Старый маршрут не запустится.",13,0xFFB34E27,true),18);
         LinearLayout card=vertical();card.setPadding(dp(16),dp(16),dp(16),dp(16));card.setBackground(box(Color.WHITE,19));
         try{
             Plan p=RouteGhostStorage.load(this);routeLoaded=!captureFailed;
@@ -543,10 +638,9 @@ public final class RouteGhostPanel extends Activity {
     }
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/RouteGhostStorage.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import android.content.Context;
@@ -580,10 +674,9 @@ public final class RouteGhostStorage {
     }
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/RouteGhostUi.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import android.app.Activity;
@@ -591,8 +684,10 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -607,76 +702,141 @@ import java.util.ArrayList;
 import static app.organicmaps.routeghost.RouteData.*;
 
 public final class RouteGhostUi {
+    private static final int MAX_ATTEMPTS = 12;
+    private static final int RETRY_DELAY_MS = 250;
+
     private RouteGhostUi() { }
+
     public static void attach(Activity activity) {
-        FrameLayout frame=activity.findViewById(android.R.id.content);
-        if(frame.findViewWithTag("routeghost-control")!=null)return;
-        TextView launch=new TextView(activity);
+        FrameLayout frame = activity.findViewById(android.R.id.content);
+        if (frame.findViewWithTag("routeghost-control") != null) return;
+
+        TextView launch = new TextView(activity);
         launch.setTag("routeghost-control");
         launch.setText("GPS  ◉");
         launch.setTextColor(Color.WHITE);
         launch.setTextSize(15);
-        launch.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        launch.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         launch.setGravity(Gravity.CENTER);
-        launch.setElevation(dp(activity,9));
-        launch.setPadding(dp(activity,18),dp(activity,13),dp(activity,18),dp(activity,13));
-        GradientDrawable bg=new GradientDrawable();bg.setColor(0xFF168454);bg.setCornerRadius(dp(activity,26));launch.setBackground(bg);
-        FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(-2,-2,Gravity.END|Gravity.BOTTOM);
-        params.rightMargin=dp(activity,15);params.bottomMargin=dp(activity,98);
-        frame.addView(launch,params);
-        launch.setOnClickListener(v->{
-            boolean captured=false;
-            boolean built=RoutingController.get().isBuilt();
-            try{if(built)captured=captureSelectedRoute(activity);}
-            catch(Exception ex){Toast.makeText(activity,"Маршрут недоступен: "+ex.getMessage(),Toast.LENGTH_LONG).show();}
-            activity.startActivity(new Intent(activity,RouteGhostPanel.class)
-                .putExtra("captured",captured).putExtra("built",built));
+        launch.setElevation(dp(activity, 9));
+        launch.setPadding(dp(activity, 18), dp(activity, 13), dp(activity, 18), dp(activity, 13));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF168454);
+        bg.setCornerRadius(dp(activity, 26));
+        launch.setBackground(bg);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-2, -2, Gravity.END | Gravity.BOTTOM);
+        params.rightMargin = dp(activity, 15);
+        params.bottomMargin = dp(activity, 98);
+        frame.addView(launch, params);
+
+        Handler handler = new Handler(Looper.getMainLooper());
+        launch.setOnClickListener(v -> {
+            if (!launch.isEnabled()) return;
+            launch.setEnabled(false);
+            launch.setText("Маршрут…");
+            captureWithRetry(activity, launch, handler, 0);
         });
     }
-    private static int dp(Activity a,int value){return (int)(value*a.getResources().getDisplayMetrics().density+0.5f);}
-    private static boolean captureSelectedRoute(Activity activity)throws Exception {
-        if(!Framework.nativeIsRouteBuilt())return false;
-        JunctionInfo[] junctions=Framework.nativeGetRouteJunctionPoints(12.0);
-        if(junctions==null||junctions.length<2)return false;
-        ArrayList<Pt> points=new ArrayList<>();
-        for(JunctionInfo j:junctions){
-            Pt p=new Pt(j.mLat,j.mLon);
-            if(points.isEmpty()||metres(points.get(points.size()-1),p)>0.15)points.add(p);
-            if(points.size()>35000)throw new Exception("Слишком длинный маршрут");
+
+    private static void captureWithRetry(Activity activity, TextView launch, Handler handler, int attempt) {
+        if (activity.isFinishing() || (Build.VERSION.SDK_INT >= 17 && activity.isDestroyed())) return;
+
+        RoutingController controller = RoutingController.get();
+        boolean built = controller.isBuilt() || Framework.nativeIsRouteBuilt();
+        boolean building = controller.isBuilding() || Framework.nativeIsRouteBuilding();
+        boolean captured = false;
+        String error = null;
+
+        if (built && !building) {
+            try {
+                captured = captureSelectedRoute(activity);
+            } catch (Exception ex) {
+                error = ex.getMessage();
+            }
         }
-        if(points.size()<2||length(points)<5)return false;
-        Router router=Router.get();
-        String type=router==Router.Vehicle?CAR:router==Router.Pedestrian?WALK:router==Router.Bicycle?OTHER:BUS;
-        int secs=(int)Math.max(1,length(points)/(type.equals(WALK)?1.35:10.0));
-        if(router==Router.Transit){
-            TransitRouteInfo info=RoutingController.get().getCachedTransitInfo();
-            if(info!=null){
-                secs=Math.max(1,info.getTotalTime());
-                for(TransitStepInfo step:info.getTransitSteps()){
-                    String t=step.getType().name();
-                    if(t.equals("SUBWAY")){type=METRO;break;}
-                    if(t.equals("TRAM")){type=TRAM;break;}
-                    if(t.equals("TROLLEYBUS")){type=TROLLEY;break;}
-                    if(t.equals("TRAIN")||t.equals("LIGHT_RAIL")){type=TRAIN;break;}
-                    if(t.equals("BUS")){type=BUS;break;}
+
+        if (!captured && attempt < MAX_ATTEMPTS && (building || built)) {
+            handler.postDelayed(() -> captureWithRetry(activity, launch, handler, attempt + 1), RETRY_DELAY_MS);
+            return;
+        }
+
+        if (error != null) {
+            Toast.makeText(activity, "Не удалось прочитать маршрут: " + error, Toast.LENGTH_LONG).show();
+        }
+        launch.setText("GPS  ◉");
+        launch.setEnabled(true);
+        Intent intent = new Intent(activity, RouteGhostPanel.class);
+        intent.putExtra("built", built || building);
+        intent.putExtra("captured", captured);
+        intent.putExtra("capture_attempted", true);
+        activity.startActivity(intent);
+    }
+
+    private static int dp(Activity a, int value) {
+        return (int) (value * a.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private static boolean captureSelectedRoute(Activity activity) throws Exception {
+        // This JNI snapshot is tied to the selected alternative (not route marks).
+        // The native fallback added by apply_patch.py can also read its stored RouteBase.
+        JunctionInfo[] junctions = Framework.nativeGetRouteJunctionPoints(50.0);
+        if (junctions == null || junctions.length < 2) return false;
+
+        ArrayList<Pt> points = new ArrayList<>();
+        for (JunctionInfo junction : junctions) {
+            if (junction == null) continue;
+            Pt point;
+            try {
+                point = new Pt(junction.mLat, junction.mLon);
+            } catch (IllegalArgumentException ex) {
+                throw new Exception("Маршрут содержит неверные координаты");
+            }
+            if (points.isEmpty() || metres(points.get(points.size() - 1), point) > 0.15) {
+                points.add(point);
+            }
+            if (points.size() > 100000) throw new Exception("Слишком длинный маршрут");
+        }
+        if (points.size() < 2 || length(points) < 5) return false;
+
+        Router router = Router.get();
+        String type = router == Router.Vehicle ? CAR
+            : router == Router.Pedestrian ? WALK
+            : router == Router.Bicycle ? OTHER : BUS;
+        int seconds = (int) Math.max(1, length(points) / (WALK.equals(type) ? 1.35 : 10.0));
+        if (router == Router.Transit) {
+            TransitRouteInfo info = RoutingController.get().getCachedTransitInfo();
+            if (info != null) {
+                seconds = Math.max(1, info.getTotalTime());
+                for (TransitStepInfo step : info.getTransitSteps()) {
+                    String t = step.getType().name();
+                    if (t.equals("SUBWAY")) { type = METRO; break; }
+                    if (t.equals("TRAM")) { type = TRAM; break; }
+                    if (t.equals("TROLLEYBUS")) { type = TROLLEY; break; }
+                    if (t.equals("TRAIN") || t.equals("LIGHT_RAIL")) { type = TRAIN; break; }
+                    if (t.equals("BUS")) { type = BUS; break; }
                 }
             }
-        }else{
-            RoutingInfo info=RoutingController.get().getCachedRoutingInfo();
-            if(info!=null && info.totalTimeInSeconds>0)secs=info.totalTimeInSeconds;
+        } else {
+            RoutingInfo info = RoutingController.get().getCachedRoutingInfo();
+            if (info != null && info.totalTimeInSeconds > 0) seconds = info.totalTimeInSeconds;
         }
-        Plan plan=new Plan();plan.title="Маршрут Organic Maps";plan.source="Organic Maps";
-        plan.note=router==Router.Transit?"Для смешанного транспорта режим движения приблизительный — тип отдельных участков не определяется по GPS-геометрии.":"";
-        plan.legs.add(new Leg(type,"Маршрут",points,secs));
-        RouteGhostStorage.save(activity,plan);
+
+        Plan plan = new Plan();
+        plan.title = "Маршрут Organic Maps";
+        plan.source = "Organic Maps";
+        plan.note = router == Router.Transit
+            ? "Геометрия выбранного варианта; скорость и пересадки моделируются приблизительно."
+            : "";
+        plan.legs.add(new Leg(type, "Маршрут", points, seconds));
+        // Persist only after validating the entire selected path.
+        RouteGhostStorage.save(activity, plan);
         return true;
     }
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/SimulationEngine.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import java.util.ArrayList;
@@ -809,10 +969,9 @@ public final class SimulationEngine {
     }
 }
 
-
-============================================================================================
+================================================================================
 FILE: overlay/app/organicmaps/routeghost/TrackIO.java
-============================================================================================
+================================================================================
 package app.organicmaps.routeghost;
 
 import org.json.JSONArray;
@@ -864,10 +1023,9 @@ public final class TrackIO {
     }
 }
 
-
-============================================================================================
+================================================================================
 FILE: .github/workflows/build-android.yml
-============================================================================================
+================================================================================
 name: Build RouteGhost (Organic Maps)
 
 on:
@@ -896,6 +1054,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Validate RouteGhost code and patch
+        run: bash tests/run.sh
 
       - name: Clone Organic Maps with dependencies
         run: |
@@ -926,10 +1087,9 @@ jobs:
           path: organicmaps/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
 
-
-============================================================================================
+================================================================================
 FILE: .github/workflows/export-full-source.yml
-============================================================================================
+================================================================================
 name: Export Complete RouteGhost Source
 
 on:
@@ -984,63 +1144,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-
-============================================================================================
-FILE: tests/RunEngineTests.java
-============================================================================================
-import app.organicmaps.routeghost.RouteData;
-import app.organicmaps.routeghost.SimulationEngine;
-import java.util.ArrayList;
-import static app.organicmaps.routeghost.RouteData.*;
-
-public class RunEngineTests {
-  private static void check(boolean condition,String text){if(!condition)throw new AssertionError(text);}
-  public static void main(String[] args){
-    Plan walking=new Plan();walking.seed=54321;
-    ArrayList<Pt> coords=new ArrayList<>();
-    for(int i=0;i<50;i++)coords.add(new Pt(52.52+i*0.0001,13.40+i*0.00005));
-    walking.legs.add(new Leg(WALK,"Walking",coords,800));
-    SimulationEngine.Config cfg=new SimulationEngine.Config();
-    Timeline timeline=SimulationEngine.generate(walking,cfg);
-    check(timeline.frames.size()>20,"too few samples");
-    check(timeline.duration()>0,"duration");
-    Pt first=timeline.frames.get(0).pos,last=timeline.frames.get(timeline.frames.size()-1).pos;
-    check(metres(first,coords.get(0))<1,"start drift");
-    check(metres(last,coords.get(coords.size()-1))<1,"finish drift");
-    long previous=-1;
-    for(Keyframe f:timeline.frames){check(f.atMillis>previous,"nonmonotonic time");previous=f.atMillis;}
-    check(metres(SimulationEngine.sample(timeline,timeline.duration()+1000,false,12).pos,last)<0.1,"did not stop");
-    Timeline again=SimulationEngine.generate(walking,cfg);
-    check(timeline.duration()==again.duration(),"not deterministic");
-    Plan broken=new Plan();broken.legs.add(new Leg(WALK,"1",coords.subList(0,5),20));
-    broken.legs.add(new Leg(WALK,"2",coords.subList(20,30),30));
-    boolean rejected=false;
-    try{SimulationEngine.generate(broken,cfg);}catch(IllegalArgumentException e){rejected=true;}
-    check(rejected,"teleport jump allowed");
-    Plan bus=new Plan();bus.seed=4;bus.legs.add(new Leg(BUS,"Bus",coords,180));
-    Timeline busTimeline=SimulationEngine.generate(bus,cfg);
-    check(busTimeline.duration()>0&&busTimeline.frames.size()>3,"transit failed");
-    System.out.println("PASS: geometry, timing, deterministic delays, gap guard, public transport");
-  }
-}
-
-
-============================================================================================
-FILE: tests/run.sh
-============================================================================================
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")/.."
-mkdir -p /tmp/routeghost-unit-classes
-javac -d /tmp/routeghost-unit-classes \
-  tests/stubs/org/json/*.java \
-  overlay/app/organicmaps/routeghost/RouteData.java \
-  overlay/app/organicmaps/routeghost/SimulationEngine.java \
-  tests/RunEngineTests.java
-java -cp /tmp/routeghost-unit-classes RunEngineTests
-python3 -m py_compile apply_patch.py
-
-
-
-
-Важное замечание: код ядра Organic Maps не напечатан в этом файле. Он находится в https://github.com/organicmaps/organicmaps. Полное объединённое дерево можно получить через GitHub Actions в этом архиве.
