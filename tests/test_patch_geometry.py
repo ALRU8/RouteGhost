@@ -61,6 +61,14 @@ for variation in (ORIGINAL,
     assert 'nativeGetRouteAltitudeData' in patched
     assert module.patch_native_route_geometry(patched) == patched
 
+# The Android manifest permission must remain in the upstream Gradle allowlist.
+base_gradle = ("def allowedPermissions = [\n"
+               "    \"name='android.permission.ACCESS_FINE_LOCATION'\",\n"
+               "]\nregisterCheckApkPermissionsTasks(project, allowedPermissions)\n")
+updated_gradle = module.patch_permission_allowlist(base_gradle)
+assert updated_gradle.count('android.permission.ACCESS_MOCK_LOCATION') == 1
+assert module.patch_permission_allowlist(updated_gradle) == updated_gradle
+
 try:
     module.patch_native_route_geometry('JNIEXPORT jint other_method() { return 0; }')
     raise AssertionError('Expected to reject missing JNI entry point')
@@ -73,6 +81,8 @@ with TemporaryDirectory() as tmp:
     (main / 'java/app/organicmaps').mkdir(parents=True)
     (main / 'java/app/organicmaps/MwmActivity.java').write_text('    initViews(isLaunchByDeepLink);\n')
     (main / 'AndroidManifest.xml').write_text(MANIFEST)
+    gradle = root / 'android/app/build.gradle'
+    gradle.write_text("def allowedPermissions = [\n    \"name='android.permission.ACCESS_COARSE_LOCATION'\",\n    \"name='android.permission.ACCESS_FINE_LOCATION'\",\n]\nregisterCheckApkPermissionsTasks(project, allowedPermissions)\n")
     native = root / 'android/sdk/src/main/cpp/app/organicmaps/sdk/Framework.cpp'
     native.parent.mkdir(parents=True)
     native.write_text('header\n' + ORIGINAL)
@@ -83,6 +93,14 @@ with TemporaryDirectory() as tmp:
     assert output.count('Selected route has no usable geometry') == 1
     assert output.count('Java_app_organicmaps_sdk_Framework_nativeGetRouteAltitudeData') == 1
     assert (main / 'AndroidManifest.xml').read_text().count('android:label="RouteGhost"') == 3
+    import xml.etree.ElementTree as ET
+    manifest_root = ET.fromstring((main / 'AndroidManifest.xml').read_text())
+    permissions = [node for node in manifest_root.findall('uses-permission')
+                   if node.get('{http://schemas.android.com/apk/res/android}name')
+                   == 'android.permission.ACCESS_MOCK_LOCATION']
+    assert len(permissions) == 1
+    assert gradle.read_text().count('"name=\'android.permission.ACCESS_MOCK_LOCATION\'",') == 1
+
     assert (main / 'java/app/organicmaps/routeghost/RouteGhostUi.java').is_file()
     route_data = main / 'java/app/organicmaps/routeghost/RouteData.java'
     assert route_data.is_file() and 'class Plan' in route_data.read_text()
@@ -94,6 +112,8 @@ with TemporaryDirectory() as tmp:
     (main / 'java/app/organicmaps').mkdir(parents=True)
     (main / 'java/app/organicmaps/MwmActivity.java').write_text('    initViews(isLaunchByDeepLink);\n')
     (main / 'AndroidManifest.xml').write_text(MANIFEST)
+    gradle = root / 'android/app/build.gradle'
+    gradle.write_text("def allowedPermissions = [\n    \"name='android.permission.ACCESS_COARSE_LOCATION'\",\n    \"name='android.permission.ACCESS_FINE_LOCATION'\",\n]\nregisterCheckApkPermissionsTasks(project, allowedPermissions)\n")
     native = root / 'android/sdk/src/main/cpp/app/organicmaps/sdk/Framework.cpp'
     native.parent.mkdir(parents=True)
     native.write_text('header\n' + ORIGINAL)
@@ -106,6 +126,7 @@ with TemporaryDirectory() as tmp:
                 (fake_overlay / item.name).write_bytes(item.read_bytes())
         module.OVERLAY = fake_overlay
         module.patch(root)
+        assert gradle.read_text().count('"name=\'android.permission.ACCESS_MOCK_LOCATION\'",') == 1
         assert 'public final class RouteData' in (main / 'java/app/organicmaps/routeghost/RouteData.java').read_text()
         assert 'class Plan' in (main / 'java/app/organicmaps/routeghost/RouteData.java').read_text()
     finally:

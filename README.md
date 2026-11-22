@@ -1,3 +1,26 @@
+## RouteGhost 2.5 — исправление проверки разрешений APK
+
+Встроенная проверка Organic Maps `checkFdroidDebugApkPermissions` отклоняла
+`android.permission.ACCESS_MOCK_LOCATION`, добавленное в версии 2.4.
+Теперь `apply_patch.py` добавляет именно это разрешение в список
+`allowedPermissions` в `android/app/build.gradle` клонированного Organic Maps.
+Проверка разрешений не отключается, остальные разрешения не изменяются.
+Повторное применение патча не создаёт дубликаты.
+
+**Для обновления существующего GitHub-репозитория:** замените один файл
+`apply_patch.py`, сохраните коммит и запустите новую сборку в Actions.
+Полная сборка APK в этой среде не проводилась.
+
+## RouteGhost 2.4 — исправление выбора Mock Location
+
+Теперь `apply_patch.py` автоматически добавляет `ACCESS_MOCK_LOCATION` в
+`android/app/src/main/AndroidManifest.xml`, чтобы приложение отображалось
+в списке «Выбрать приложение для фиктивных местоположений» Android.
+
+После обновления GitHub-проекта нужно **заново собрать APK и установить его**.
+В настройках разработчика выберите RouteGhost. Старый APK не получит
+разрешение автоматически от редактирования файлов на GitHub.
+
 # RouteGhost × Organic Maps — интеграционный проект
 
 Это **не APK** и не копия исходников Organic Maps. ZIP содержит интеграцию в официальное приложение Organic Maps, которую GitHub Actions накладывает на исходный код, собирая форк. Установка Android Studio пользователю не нужна.
@@ -86,3 +109,8 @@ Organic Maps — open-source-проект на лицензии Apache 2.0 с о
 До запуска тяжёлой сборки workflow проверяет наличие всех семи Java-файлов.
 Для существующего репозитория достаточно заменить только `apply_patch.py`,
 если остальные шесть Java-файлов уже присутствуют.
+
+
+## RouteGhost 2.6: correction for GitHub test fixture
+
+If `Validate RouteGhost code and patch` fails with `Missing upstream Android app/build.gradle`, the GitHub repository has an older `tests/test_patch_geometry.py` that creates a miniature upstream fixture without a Gradle allowlist file. Replace `tests/test_patch_geometry.py` with the updated file. The production `apply_patch.py` intentionally continues to reject a missing Gradle file, so the permission verification cannot be bypassed. The GitHub workflow now watches changes under `tests/**`.

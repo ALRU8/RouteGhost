@@ -6,6 +6,7 @@ on:
     paths:
       - 'overlay/**'
       - 'apply_patch.py'
+      - 'tests/**'
       - '.github/workflows/build-android.yml'
 
 jobs:
