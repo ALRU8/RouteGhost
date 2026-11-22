@@ -193,6 +193,31 @@ def patch_native_route_geometry(native_text: str) -> str:
     return native_text[:opening + 1] + body + native_text[closing:]
 
 
+def patch_permission_allowlist(gradle_text: str) -> str:
+    """Keep the Organic Maps APK permission checker enabled for mock-location builds.
+
+    The upstream android/app/build.gradle keeps an explicit permission allowlist.
+    RouteGhost declares ACCESS_MOCK_LOCATION in the manifest, so it must also
+    be declared in this allowlist. This operation is safe to re-run.
+    """
+    start = gradle_text.find("def allowedPermissions = [")
+    end_marker = "registerCheckApkPermissionsTasks(project, allowedPermissions)"
+    end = gradle_text.find(end_marker)
+    if start < 0 or end <= start:
+        raise RuntimeError("Organic Maps build.gradle permission allowlist was not found")
+    block = gradle_text[start:end]
+    mock = '"name=\'android.permission.ACCESS_MOCK_LOCATION\'",'
+    if mock in block:
+        if block.count(mock) != 1:
+            raise RuntimeError("ACCESS_MOCK_LOCATION is duplicated in allowedPermissions")
+        return gradle_text
+    anchor = '"name=\'android.permission.ACCESS_FINE_LOCATION\'",'
+    if block.count(anchor) != 1:
+        raise RuntimeError("Cannot locate the fine-location permission in Organic Maps allowedPermissions")
+    at = gradle_text.index(anchor, start, end) + len(anchor)
+    return gradle_text[:at] + "\n    " + mock + gradle_text[at:]
+
+
 def patch(root: Path):
     main = root / "android" / "app" / "src" / "main"
     mwm = main / "java" / "app" / "organicmaps" / "MwmActivity.java"
@@ -248,6 +273,17 @@ def patch(root: Path):
     if mock_permission not in permission_names:
         raise RuntimeError("Missing ACCESS_MOCK_LOCATION after manifest patch")
     manifest.write_text(xml, encoding="utf-8")
+
+    # Organic Maps validates manifest permissions against its explicit Gradle
+    # allowlist after assembling the APK. Preserve the check and allow only
+    # the additional permission needed for the Developer Options mock picker.
+    gradle = root / "android" / "app" / "build.gradle"
+    if not gradle.is_file():
+        raise FileNotFoundError("Missing upstream Android app/build.gradle")
+    gradle_original = gradle.read_text(encoding="utf-8")
+    gradle_patched = patch_permission_allowlist(gradle_original)
+    if gradle_patched != gradle_original:
+        gradle.write_text(gradle_patched, encoding="utf-8")
 
     # When the route is previewed or the selected alternative has just switched,
     # the native following-route geometry may not be ready yet. The routing core
