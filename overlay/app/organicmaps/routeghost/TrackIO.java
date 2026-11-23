@@ -12,12 +12,11 @@ import java.util.List;
 import java.util.Locale;
 import static app.organicmaps.routeghost.RouteData.*;
 
-/** Imported GPX is treated as user-supplied geometry, not a validated transit route. */
 public final class TrackIO {
     private TrackIO(){}
     public static Plan read(byte[] bytes,String filename)throws Exception{
         String text=new String(bytes,StandardCharsets.UTF_8);
-        if(filename.toLowerCase(Locale.ROOT).endsWith(".gpx")||text.trim().startsWith("<?xml"))return gpx(bytes);
+        if(text.trim().startsWith("<")||filename.toLowerCase(Locale.ROOT).endsWith(".gpx"))return gpx(bytes);
         JSONObject json=new JSONObject(text);
         if(json.has("legs"))return Plan.read(json);
         JSONArray coords=null;

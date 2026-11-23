@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Install the RouteGhost bridge into an upstream Organic Maps source tree.
-
-Usage: python apply_patch.py /path/to/organicmaps
-"""
 from pathlib import Path
 import shutil
 import re
@@ -10,9 +6,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 OVERLAY = Path(__file__).resolve().parent / "overlay" / "app" / "organicmaps" / "routeghost"
+RES_OVERLAY = Path(__file__).resolve().parent / "overlay" / "res"
 
-# Self-contained fallback: a partial GitHub upload may omit RouteData.java.
-# Keep this source in sync with overlay/app/organicmaps/routeghost/RouteData.java.
+
 ROUTE_DATA_SOURCE = r'''
 package app.organicmaps.routeghost;
 
@@ -102,7 +98,6 @@ public final class RouteData {
 '''
 
 
-
 def once_replace(data: str, before: str, after: str, location: str) -> str:
     number = data.count(before)
     if number != 1:
@@ -111,11 +106,6 @@ def once_replace(data: str, before: str, after: str, location: str) -> str:
 
 
 def set_routeghost_label(xml: str, tag_name: str, identity: str = "") -> str:
-    """Rename only a specific manifest element, preserving the original formatting.
-
-    Organic Maps defines the app name on both <application> and its launcher
-    <activity-alias>. Replacing a global string or expecting one match breaks.
-    """
     matches = [match for match in re.finditer(r"<" + re.escape(tag_name) + r"\b[^>]*>", xml, re.DOTALL)
                if not identity or identity in match.group(0)]
     if len(matches) != 1:
@@ -132,7 +122,7 @@ def set_routeghost_label(xml: str, tag_name: str, identity: str = "") -> str:
 
 
 def patch_native_route_geometry(native_text: str) -> str:
-    # Patch just one JNI function. Tolerate upstream whitespace and logging changes.
+
     name = "Java_app_organicmaps_sdk_Framework_nativeGetRouteJunctionPoints"
     matches = list(re.finditer(r"\b" + name + r"\s*\(", native_text))
     if len(matches) != 1:
@@ -194,12 +184,6 @@ def patch_native_route_geometry(native_text: str) -> str:
 
 
 def patch_permission_allowlist(gradle_text: str) -> str:
-    """Keep the Organic Maps APK permission checker enabled for mock-location builds.
-
-    The upstream android/app/build.gradle keeps an explicit permission allowlist.
-    RouteGhost declares ACCESS_MOCK_LOCATION in the manifest, so it must also
-    be declared in this allowlist. This operation is safe to re-run.
-    """
     start = gradle_text.find("def allowedPermissions = [")
     end_marker = "registerCheckApkPermissionsTasks(project, allowedPermissions)"
     end = gradle_text.find(end_marker)
@@ -233,8 +217,7 @@ def patch(root: Path):
 
     xml = manifest.read_text(encoding="utf-8")
     if 'android:name="app.organicmaps.routeghost.RouteGhostPanel"' not in xml:
-        insertion = '''    <!-- RouteGhost: integrated test-location controls. -->
-    <activity
+        insertion = '''    <activity
         android:name="app.organicmaps.routeghost.RouteGhostPanel"
         android:label="RouteGhost"
         android:exported="false"
@@ -248,8 +231,8 @@ def patch(root: Path):
     xml = set_routeghost_label(xml, "application")
     xml = set_routeghost_label(xml, "activity-alias",
                                 'android:name="app.organicmaps.DownloadResourcesActivity"')
-    # The Developer Options mock-location picker requires this permission
-    # to be declared by the installed package.
+
+
     mock_permission = "android.permission.ACCESS_MOCK_LOCATION"
     xmlroot = ET.fromstring(xml)
     ns = "{http://schemas.android.com/apk/res/android}"
@@ -263,7 +246,7 @@ def patch(root: Path):
                '\n    <uses-permission android:name="' + mock_permission + '" />' +
                xml[root_opening.end():])
 
-    # The upstream app already requests ACCESS_FINE_LOCATION, FOREGROUND_SERVICE and FOREGROUND_SERVICE_LOCATION.
+
     xmlroot = ET.fromstring(xml)
     ns = "{http://schemas.android.com/apk/res/android}"
     permission_names = {node.attrib.get(ns + "name") for node in xmlroot if node.tag == "uses-permission"}
@@ -274,9 +257,7 @@ def patch(root: Path):
         raise RuntimeError("Missing ACCESS_MOCK_LOCATION after manifest patch")
     manifest.write_text(xml, encoding="utf-8")
 
-    # Organic Maps validates manifest permissions against its explicit Gradle
-    # allowlist after assembling the APK. Preserve the check and allow only
-    # the additional permission needed for the Developer Options mock picker.
+
     gradle = root / "android" / "app" / "build.gradle"
     if not gradle.is_file():
         raise FileNotFoundError("Missing upstream Android app/build.gradle")
@@ -285,10 +266,7 @@ def patch(root: Path):
     if gradle_patched != gradle_original:
         gradle.write_text(gradle_patched, encoding="utf-8")
 
-    # When the route is previewed or the selected alternative has just switched,
-    # the native following-route geometry may not be ready yet. The routing core
-    # retains the selected route in RoutesResult, including its actual vertices.
-    # Read these vertices as a fallback instead of inventing a straight line.
+
     native_routing = (root / "android" / "sdk" / "src" / "main" / "cpp" / "app" /
                       "organicmaps" / "sdk" / "Framework.cpp")
     if not native_routing.is_file():
@@ -298,6 +276,7 @@ def patch(root: Path):
     if patched_text != native_text:
         native_routing.write_text(patched_text, encoding="utf-8")
 
+    shutil.copytree(RES_OVERLAY, main / "res", dirs_exist_ok=True)
     destination = main / "java" / "app" / "organicmaps" / "routeghost"
     destination.mkdir(parents=True, exist_ok=True)
     required = (

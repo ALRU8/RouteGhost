@@ -23,7 +23,6 @@ import java.util.ArrayList;
 
 import static app.organicmaps.routeghost.RouteData.*;
 
-/** Developer-options mock location only. Does not hide or spoof the mock flag. */
 public final class LocationService extends Service {
     public static final String START="app.organicmaps.routeghost.START", STOP="app.organicmaps.routeghost.STOP", PAUSE="app.organicmaps.routeghost.PAUSE", RESUME="app.organicmaps.routeghost.RESUME", UPDATE="app.organicmaps.routeghost.UPDATE";
     public static volatile boolean running=false, paused=false, fixed=false;
@@ -80,7 +79,7 @@ public final class LocationService extends Service {
                     manager.addTestProvider(p,false,false,false,false,true,true,true,1,1);
                     manager.setTestProviderEnabled(p,true);providers.add(p);
                 }catch(SecurityException ex){if(providers.isEmpty())throw ex;}
-                catch(IllegalArgumentException ex){ /* Provider conflict: GPS is mandatory. */ if(providers.isEmpty())throw ex; }
+                catch(IllegalArgumentException ex){if(providers.isEmpty())throw ex; }
             }
             if(providers.isEmpty())throw new Exception("Не удалось подключить тестовые GPS-провайдеры");
             PowerManager powers=getSystemService(PowerManager.class);
@@ -107,8 +106,7 @@ public final class LocationService extends Service {
             }else{sample=SimulationEngine.sample(timeline,elapsed,noisy,seed);}
             position=sample.pos;speed=paused?0:sample.speedMps*(fixed?0:multiplier);
             status=paused?"Пауза":fixed?"Фиксированная точка":elapsed>=total?"Маршрут завершён, точка удерживается":sample.label;
-            // Underground subway tunnels often have no satellite position. Optionally
-            // retain the last provider fix until the train leaves a tunnel.
+
             if(!(subwayLoss && METRO.equals(sample.type) && !fixed))for(String provider:providers){
                 Location loc=new Location(provider);
                 loc.setLatitude(sample.pos.lat);loc.setLongitude(sample.pos.lon);

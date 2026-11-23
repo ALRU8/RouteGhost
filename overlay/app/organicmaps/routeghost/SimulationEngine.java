@@ -5,13 +5,34 @@ import java.util.List;
 import java.util.Random;
 import static app.organicmaps.routeghost.RouteData.*;
 
-/** Generates one reproducible journey. Never adds phantom geometry or invents real-world facts. */
 public final class SimulationEngine {
     private SimulationEngine() {}
     public static final class Config {
         public boolean pauses=true, gpsNoise=true, trafficModel=true, subwaySignalLoss=false;
         public double pace=1.0;
-        public int density=2; // 0 low, 1 standard, 2 realistic
+        public int density=2;
+        public final java.util.HashMap<String,double[]> speeds=new java.util.HashMap<>();
+        public double[] range(String type){
+            double[] custom=speeds.get(type);
+            return custom!=null?custom:defaultRange(type);
+        }
+    }
+    public static double[] defaultRange(String type){
+        switch(type){
+            case WALK:return new double[]{4.0,5.8};
+            case CAR:return new double[]{25,55};
+            case BUS:case ELECTROBUS:return new double[]{15,30};
+            case MINIBUS:return new double[]{18,35};
+            case TROLLEY:return new double[]{14,26};
+            case TRAM:return new double[]{14,28};
+            case METRO:return new double[]{28,45};
+            case MCC:return new double[]{35,55};
+            case MCD:return new double[]{35,60};
+            case TRAIN:return new double[]{40,80};
+            case MONORAIL:return new double[]{30,50};
+            case FERRY:return new double[]{15,30};
+            default:return new double[]{12,20};
+        }
     }
     private static int between(Random r,int lo,int hi){return lo+r.nextInt(Math.max(1,hi-lo+1));}
     private static boolean chance(Random r,double prob){return r.nextDouble()<prob;}
@@ -42,13 +63,11 @@ public final class SimulationEngine {
             double distance=length(l.path);
             int duration=l.baseSeconds;
             if(distance>5){
-                double typical= WALK.equals(l.type)?between(r,37,55)/10.0/3.6 : CAR.equals(l.type)?between(r,24,52)/3.6 : rail(l.type)?between(r,24,51)/3.6 : between(r,13,33)/3.6;
-                // Use base duration from router for roads and public transport; cap stochastic variation.
-                double factor=WALK.equals(l.type)?0.84+r.nextDouble()*0.32 : (CAR.equals(l.type)?0.80+r.nextDouble()*0.4:0.94+r.nextDouble()*0.12);
-                duration=Math.max(1,(int)Math.round(duration*factor/Math.max(0.5,Math.min(2,c.pace))));
-                if(l.inferredGeometry && !CAR.equals(l.type))duration=Math.max(duration,(int)(distance/typical));
+                double[] range=c.range(l.type);
+                double kmh=range[0]+r.nextDouble()*(range[1]-range[0]);
+                double mps=Math.max(0.3,kmh/3.6*Math.max(0.5,Math.min(2,c.pace)));
+                duration=Math.max(1,(int)Math.round(distance/mps));
                 if(c.trafficModel && (CAR.equals(l.type)||BUS.equals(l.type)||ELECTROBUS.equals(l.type)||MINIBUS.equals(l.type)||TROLLEY.equals(l.type)||TRAM.equals(l.type))){
-                    // A statistical time-of-day model, not realtime congestion measurements.
                     java.time.ZoneId zone=java.time.ZoneId.systemDefault();
                     int hour=java.time.LocalTime.now(zone).getHour();
                     double scale=(hour>=7&&hour<10)||(hour>=17&&hour<20) ? 1.22+r.nextDouble()*0.53
@@ -68,7 +87,7 @@ public final class SimulationEngine {
                     }
                 }
             }
-            // Transit stop coordinates, when supplied by route provider, have priority over synthetic events.
+
             if(transit&&!l.stops.isEmpty()){
                 breakAt.clear();for(Pt stop:l.stops){
                     double nearest=0,err=Double.MAX_VALUE;
@@ -80,7 +99,7 @@ public final class SimulationEngine {
             ArrayList<Double> markers=new ArrayList<>();markers.add(0.0);
             for(double d:breakAt){if(d>markers.get(markers.size()-1)+20 && d<distance-15) markers.add(d);}
             markers.add(distance);
-            // Route in short geometric hops. Acceleration/easing around stops but no jumps.
+
             for(int part=1;part<markers.size();part++){
                 double from=markers.get(part-1),to=markers.get(part);
                 int n=Math.max(1,(int)Math.ceil((to-from)/25));
@@ -89,7 +108,7 @@ public final class SimulationEngine {
                     int idx=1;while(idx<cum.length-1&&cum[idx]<d)idx++;
                     double span=Math.max(0.001,cum[idx]-cum[idx-1]);Pt point=mix(path.get(idx-1),path.get(idx),(d-cum[idx-1])/span);
                     double fraction=(to-from)/Math.max(0.001,distance)/n;
-                    // Easing adjusts each hop duration by a small factor, preserving route geometry.
+
                     double phase=(double)k/n;
                     double easing=(k==1||k==n)?1.35:(phase<0.18||phase>0.82?1.14:0.91);
                     long hop=Math.max(250,Math.round(duration*1000*fraction*easing));
@@ -116,12 +135,12 @@ public final class SimulationEngine {
         double fraction=b.atMillis<=a.atMillis?0:Math.max(0,Math.min(1,(timeMillis-a.atMillis)/(double)(b.atMillis-a.atMillis)));
         Pt p=mix(a.pos,b.pos,fraction);
         double secs=(b.atMillis-a.atMillis)/1000.0;
-        double speed=secs<=0?0:Math.min(45,metres(a.pos,b.pos)/secs);
+        double speed=secs<=0?0:Math.min(60,metres(a.pos,b.pos)/secs);
         if(timeMillis>=t.duration())speed=0;
         double bearing=metres(a.pos,b.pos)>0.5?bearing(a.pos,b.pos):0;
         String label=(metres(a.pos,b.pos)<0.2&&b.atMillis>a.atMillis)?b.label:a.label;
         String type=(metres(a.pos,b.pos)<0.2&&b.atMillis>a.atMillis)?WAIT:a.type;
-        // Stable deterministic low-frequency GPS drift; does not imply actual movement.
+
         if(noise){double ts=timeMillis/1000.0;double north=Math.sin(ts*0.29+seed*.001)*1.7+Math.sin(ts*.071)*.7;
             double east=Math.cos(ts*.21+seed*.001)*1.5;
             p=new Pt(p.lat+north/111111.0,p.lon+east/(111111.0*Math.max(0.1,Math.cos(Math.toRadians(p.lat)))));

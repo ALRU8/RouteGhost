@@ -35,7 +35,6 @@ jobs:
       - name: Add integration documentation
         run: |
           cp README.md organicmaps/ROUTEGHOST_README.md
-          cp NOTICE.md organicmaps/ROUTEGHOST_NOTICE.md
 
       - name: Package full merged source
         run: |

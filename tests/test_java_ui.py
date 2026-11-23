@@ -9,7 +9,7 @@ S={
 'android/util/DisplayMetrics.java':'''package android.util; public class DisplayMetrics {public float density=1;}''',
 'android/graphics/Color.java':'''package android.graphics;public class Color {public static final int WHITE=0;}''',
 'android/graphics/Typeface.java':'''package android.graphics;public class Typeface {public static final Typeface DEFAULT=new Typeface();public static final int BOLD=1;}''',
-'android/graphics/drawable/GradientDrawable.java':'''package android.graphics.drawable;public class GradientDrawable {public void setColor(int c){}public void setCornerRadius(int r){}}''',
+'android/graphics/drawable/GradientDrawable.java':'''package android.graphics.drawable;public class GradientDrawable {public void setColor(int c){}public void setCornerRadius(int r){}public void setStroke(int w,int c){}}''',
 'android/os/Build.java':'''package android.os;public class Build {public static class VERSION {public static int SDK_INT=30;}}''',
 'android/os/Handler.java':'''package android.os;public class Handler {public Handler(Looper l){}public boolean postDelayed(Runnable r,long d){return true;}}''',
 'android/os/Looper.java':'''package android.os;public class Looper {public static Looper getMainLooper(){return new Looper();}}''',
@@ -25,7 +25,7 @@ S={
 'app/organicmaps/sdk/routing/RoutingController.java':'''package app.organicmaps.sdk.routing;public class RoutingController {public static RoutingController get(){return new RoutingController();}public boolean isBuilt(){return true;}public boolean isBuilding(){return false;}public TransitRouteInfo getCachedTransitInfo(){return null;}public RoutingInfo getCachedRoutingInfo(){return null;}}''',
 'app/organicmaps/sdk/routing/RoutingInfo.java':'''package app.organicmaps.sdk.routing;public class RoutingInfo {public int totalTimeInSeconds;}''',
 'app/organicmaps/sdk/routing/TransitRouteInfo.java':'''package app.organicmaps.sdk.routing;import java.util.List;import java.util.ArrayList;public class TransitRouteInfo {public int getTotalTime(){return 1;}public List<TransitStepInfo> getTransitSteps(){return new ArrayList<>();}}''',
-'app/organicmaps/sdk/routing/TransitStepInfo.java':'''package app.organicmaps.sdk.routing;public class TransitStepInfo {public enum Type {SUBWAY,TRAM,TROLLEYBUS,TRAIN,LIGHT_RAIL,BUS}public Type getType(){return Type.SUBWAY;}}''',
+'app/organicmaps/sdk/routing/TransitStepInfo.java':'''package app.organicmaps.sdk.routing;public class TransitStepInfo {public enum Type {SUBWAY,TRAM,TROLLEYBUS,TRAIN,LIGHT_RAIL,BUS}public Type getType(){return Type.SUBWAY;}public int getTimeInSec(){return 1;}}''',
 'app/organicmaps/routeghost/RouteGhostStorage.java':'''package app.organicmaps.routeghost; public class RouteGhostStorage {public static void save(Object c,RouteData.Plan p)throws Exception{}}''',
 'app/organicmaps/routeghost/RouteGhostPanel.java':'''package app.organicmaps.routeghost;public class RouteGhostPanel extends android.app.Activity {}''',
 }

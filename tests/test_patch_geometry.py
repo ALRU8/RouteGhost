@@ -8,8 +8,7 @@ spec = importlib.util.spec_from_file_location('routeghost_patch', HERE / 'apply_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-# A realistic excerpt of Organic Maps tag 2026.11.11-39-android,
-# including the original JNI signature, densification, and next function.
+
 ORIGINAL = '''JNIEXPORT jobjectArray Java_app_organicmaps_sdk_Framework_nativeGetRouteJunctionPoints(JNIEnv * env, jclass,
                                                                                         jdouble maxDistM)
 {
@@ -61,7 +60,7 @@ for variation in (ORIGINAL,
     assert 'nativeGetRouteAltitudeData' in patched
     assert module.patch_native_route_geometry(patched) == patched
 
-# The Android manifest permission must remain in the upstream Gradle allowlist.
+
 base_gradle = ("def allowedPermissions = [\n"
                "    \"name='android.permission.ACCESS_FINE_LOCATION'\",\n"
                "]\nregisterCheckApkPermissionsTasks(project, allowedPermissions)\n")
@@ -105,7 +104,7 @@ with TemporaryDirectory() as tmp:
     route_data = main / 'java/app/organicmaps/routeghost/RouteData.java'
     assert route_data.is_file() and 'class Plan' in route_data.read_text()
 
-# Check a partial GitHub checkout with no overlay RouteData.java.
+
 with TemporaryDirectory() as tmp:
     root = Path(tmp) / 'organicmaps'
     main = root / 'android/app/src/main'
